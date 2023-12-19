@@ -1,4 +1,4 @@
-# LoRaWAN-SIM
+# LoRaWAN-SIM-2.4
 A LoRaWAN simulator for 2.4GHz LoRa transceivers (Work in progress!)
 
 
