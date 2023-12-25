@@ -33,11 +33,10 @@ use Term::ProgressBar 2.00;
 use GD::SVG;
 use Statistics::Basic qw(:all);
 
-die "usage: ./LoRaWAN.pl <packets_per_hour> <simulation_time(secs)> <terrain_file!> <custom_file(0/1)>\n" unless (scalar @ARGV == 4);
+die "usage: ./LoRaWAN.pl <packets_per_hour> <simulation_time(secs)> <terrain_file> <settings_file>\n" unless (scalar @ARGV == 4);
 
 die "Packet rate must be higher than or equal to 1pkt per hour\n" if ($ARGV[0] < 1);
 die "Simulation time must be longer than or equal to 1h\n" if ($ARGV[1] < 3600);
-die "Custom terrain file must be 0 or 1\n" if ($ARGV[3] > 1); # set to 1 if read_data_custom() is used
 
 # node attributes
 my %ncoords = (); # node coordinates
@@ -53,13 +52,16 @@ my %nacked = (); # unique acked packets (for confirmed transmissions) or just de
 my %nperiod = (); 
 my %npkt = (); # packet size per node
 my %ntotretr = (); # number of retransmissions per node (total)
-my %nsf = (); # SF of the ED for read_data_custom
+my %nsf = (); # SF of each ED
+my %nch = (); # Channel of each ED
 
 # gw attributes
 my %gcoords = (); # gw coordinates
 my %gunavailability = (); # unavailable gw time due to downlink or locked to another transmission
 my %gresponses = (); # acks carried out per gw
 my %gdest = (); # contains downlink information [node, sf, RX1/2, channel]
+my %gwsf = (); # SF per gw transceiver
+my %gwch = (); # Channel per gw transceiver
 
 # LoRa PHY and LoRaWAN parameters
 my @sensis = ([7,-112,-106], [8,-115,-109], [9,-117,-111], [10,-120,-114], [11,-123,-117], [12,-126,-120]); # sensitivities [SF, BW812, BW1625]
@@ -74,7 +76,7 @@ my @Ptx_l = (0, 10, 12.5); # dBm
 my @Ptx_w = (40*3.3, 58*3.3, 70*3.3); # Ptx cons. for 0, 10, 12.5 dBm (mW)
 my $Prx_w = 40 * 3.3;
 my $Pidle_w = 30 * 3.3; # this is actually the consumption of the microcontroller in idle mode
-my @channels = (2403000000, 2425000000, 2479000000); # 3x uplink channels
+my @channels = (2403000000, 2425000000, 2479000000); # 3 x uplink channels
 my @channels_d = (2450000000); # 1x downlink channel (RX2SF)
 my $rx2sf = 12; # SF used for RX2 
 my $rx2ch = 2450000000; # channel used for RX2
@@ -146,41 +148,30 @@ if ($progress_bar == 1){
 }
 my $next_update = 0;
 
-if ($ARGV[3] == 0){  # read terrain file
-	read_data();
-}else{
-	read_data_custom();
-}
-exit;
+read_data_custom();
 
 # first transmission
 my @init_trans = ();
 foreach my $n (keys %ncoords){
 	my $start = random_uniform(1, 0, $period);
-	my $sf = 0;
-	if ($ARGV[3] == 0){
-		$sf = min_sf($n);
-	}else{
-		$sf = $nsf{$n};
-	}
-	$avg_sf += $sf;
+	$avg_sf += $nsf{$n};
 	$avg_pkt += $npkt{$n};
-	my $airt = airtime($sf, $npkt{$n});
+	my $airt = airtime($nsf{$n}, $npkt{$n});
 	my $stop = $start + $airt;
-	print "# $n will transmit from $start to $stop (SF$sf)\n" if ($debug == 1);
+	print "# $n will transmit from $start to $stop (SF$nsf{$n})\n" if ($debug == 1);
 	$nunique{$n} = 1;
-	my $c = 0;
-	push (@init_trans, [$n, $start, $stop, $c, $sf, $nunique{$n}]);
+	push (@init_trans, [$n, $start, $stop, $nch{$n}, $nsf{$n}, $nunique{$n}]);
 	$nconsumption{$n} += $airt * $Ptx_w[$nptx{$n}] + ($airt+1) * $Pidle_w; # +1sec for sensing
 	$total_trans += 1;
 }
 
 # sort transmissions in ascending order
 foreach my $t (sort { $a->[1] <=> $b->[1] } @init_trans){
-	my ($n, $sta, $end, $ch, $cb, $sf, $nuni) = @$t;
+	my ($n, $sta, $end, $ch, $sf, $nuni) = @$t;
 	push (@{$sorted_t{$channels[$ch]}}, $t);
 }
 undef @init_trans;
+exit;
 
 # main loop
 while (1){
@@ -193,12 +184,12 @@ while (1){
 	# select the channel with earliest transmission among all first transmissions (may give warnings for low # of nodes)
 	my @earliest = (sort {$sorted_t{$a}[0][1] <=> $sorted_t{$b}[0][1]} keys %sorted_t);
 	my $min_ch = shift(@earliest);
-	my ($sel, $sel_sta, $sel_end, $sel_ch, $cb, $sel_sf, $sel_seq) = @{shift(@{$sorted_t{$min_ch}})};
+	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @{shift(@{$sorted_t{$min_ch}})};
 	while (!defined $sel){
 		print "# Channel $min_ch has no transmissions in the queue!\n" if ($debug == 1);
 		delete $sorted_t{$min_ch} if (scalar @{$sorted_t{$min_ch}} == 0);
 		$min_ch = shift(@earliest);
-		($sel, $sel_sta, $sel_end, $sel_ch, $cb, $sel_sf, $sel_seq) = @{shift(@{$sorted_t{$min_ch}})};
+		($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @{shift(@{$sorted_t{$min_ch}})};
 	}
 	$next_update = $progress->update($sel_end) if ($progress_bar == 1);
 	if ($sel_sta > $sim_time){
@@ -227,7 +218,7 @@ while (1){
 	
 	if ($sel =~ /^[0-9]/){ # if the packet is an uplink transmission
 		
-		my $gw_rc = node_col($sel, $sel_sta, $sel_end, $sel_ch, $cb, $sel_sf); # check for collisions and return a list of gws that received the uplink pkt
+		my $gw_rc = node_col($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf); # check for collisions and return a list of gws that received the uplink pkt
 		my $rwindow = 0;
 		my $failed = 0;
 		if ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 1)){ # if at least one gateway received the pkt -> successful transmission
@@ -241,7 +232,6 @@ while (1){
 			if (defined $sel_gw){
 				my $d_ch = $sel_ch % 8; # get the corresponding downlink channel index
 				my ($gsf, $gbw) = ($sel_sf, 500);
-				$gsf = 7 if ($sel_sf == 8 && $cb == 500);
 				my ($ack_sta, $ack_end) = ($sel_end+1, $sel_end+1+airtime($gsf, $gbw, $overhead_d));
 				$total_down_time += airtime($gsf, $gbw, $overhead_d);
 				$rwindow = 1;
@@ -251,7 +241,7 @@ while (1){
 				# place new transmission at the correct position
 				my $i = 0;
 				foreach my $el (@{$sorted_t{$channels_d[$d_ch]}}){
-					my ($n, $sta, $end, $ch, $cb, $sf, $seq) = @$el;
+					my ($n, $sta, $end, $ch, $sf, $seq) = @$el;
 					last if ($sta > $ack_sta);
 					$i += 1;
 				}
@@ -273,7 +263,7 @@ while (1){
 					my $new_name = $sel_gw.$gresponses{$sel_gw};
 					my $i = 0;
 					foreach my $el (@{$sorted_t{$rx2ch}}){
-						my ($n, $sta, $end, $ch, $cb, $sf, $seq) = @$el;
+						my ($n, $sta, $end, $ch, $sf, $seq) = @$el;
 						last if ($sta > $ack_sta);
 						$i += 1;
 					}
@@ -292,7 +282,6 @@ while (1){
 			if (defined $sel_gw){
 				# ADR: the SF is already adjusted in min_sf; here only the transmit power is adjusted
 				my $bw = 125000;
-				$bw = 500000 if ($sel_sf == 8 && $cb == 500);
 				my $gap = $sel_p - $sensis[$sel_sf-7][bwconv($bw)];
 				my $new_ptx = undef;
 				my $new_index = -1;
@@ -325,13 +314,13 @@ while (1){
 			}
 			
 			my $new_ch = $sel_ch;
-			if ($sel_sf == 8 && $cb == 500){
-				$new_ch = 64 + int(rand(8)) while ($new_ch == $sel_ch);
-			}else{
-				$new_ch = int(rand( (scalar @channels) - 8 )) while ($new_ch == $sel_ch);
-			}
+# 			if ($sel_sf == 8 && $cb == 500){
+# 				$new_ch = 64 + int(rand(8)) while ($new_ch == $sel_ch);
+# 			}else{
+# 				$new_ch = int(rand( (scalar @channels) - 8 )) while ($new_ch == $sel_ch);
+# 			}
 			$sel_ch = $new_ch;
-			my $at = airtime($sel_sf, $cb, $npkt{$sel});
+			my $at = airtime($sel_sf, $npkt{$sel});
 			$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
 			$sel_end = $sel_sta + $at;
 			# place the new transmission at the correct position
@@ -342,10 +331,10 @@ while (1){
 				$i += 1;
 			}
 			$nunique{$sel} += 1 if ($sel_sta < $sim_time); # do not count transmissions that exceed the simulation time;
-			splice(@{$sorted_t{$channels[$sel_ch]}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $cb, $sel_sf, $nunique{$sel}]);
+			splice(@{$sorted_t{$channels[$sel_ch]}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
 			$total_trans += 1 if ($sel_sta < $sim_time);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf, $cb, $npkt{$sel})+1) * $Pidle_w;
+			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf, $npkt{$sel})+1) * $Pidle_w;
 		}else{ # non-successful transmission
 			$failed = 1;
 		}
@@ -357,11 +346,11 @@ while (1){
 					$nretransmissions{$sel} += 1;
 					$sf_retrans{$sel_sf} += 1;
 					my $new_ch = $sel_ch;
-					if ($sel_sf == 8 && $cb == 500){
-						$new_ch = 64 + int(rand(8)) while ($new_ch == $sel_ch);
-					}else{
-						$new_ch = int(rand( (scalar @channels) - 8 )) while ($new_ch == $sel_ch);
-					}
+# 					if ($sel_sf == 8 && $cb == 500){
+# 						$new_ch = 64 + int(rand(8)) while ($new_ch == $sel_ch);
+# 					}else{
+# 						$new_ch = int(rand( (scalar @channels) - 8 )) while ($new_ch == $sel_ch);
+# 					}
 					$sel_ch = $new_ch;
 				}else{
 					$dropped += 1;
@@ -371,10 +360,10 @@ while (1){
 					print "# $sel 's packet lost!\n" if ($debug == 1);
 				}
 				# the node stays on only for the duration of the preamble for both receive windows
-				$nconsumption{$sel} += $preamble*(2**$sel_sf)/($cb*1000) * ($Prx_w + $Pidle_w);
-				$nconsumption{$sel} += $preamble*(2**$rx2sf)/($cb*1000) * ($Prx_w + $Pidle_w);
+				$nconsumption{$sel} += $preamble*(2**$sel_sf)/($bw*1000) * ($Prx_w + $Pidle_w); ### check this
+				$nconsumption{$sel} += $preamble*(2**$rx2sf)/($bw*1000) * ($Prx_w + $Pidle_w);
 				# plan the next transmission as soon as the duty cycle permits that
-				$at = airtime($sel_sf, $cb, $npkt{$sel});
+				$at = airtime($sel_sf, $npkt{$sel});
 				if ($new_trans == 0){
 					$sel_sta = $sel_end + 2 + rand(3); # just some randomness
 				}else{
@@ -385,7 +374,7 @@ while (1){
 				$prev_seq{$sel} = $sel_seq;
 				$new_trans = 1;
 				print "# $sel 's packet lost!\n" if ($debug == 1);
-				$at = airtime($sel_sf, $cb, $npkt{$sel});
+				$at = airtime($sel_sf, $npkt{$sel});
 				$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
 			}
 			$sel_end = $sel_sta+$at;
@@ -399,11 +388,11 @@ while (1){
 			if (($new_trans == 1) && ($sel_sta < $sim_time)){ # do not count transmissions that exceed the simulation time
 				$nunique{$sel} += 1;
 			}
-			splice(@{$sorted_t{$channels[$sel_ch]}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $cb, $sel_sf, $nunique{$sel}]);
+			splice(@{$sorted_t{$channels[$sel_ch]}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
 			$total_trans += 1 ;
 			$total_retrans += 1 if ($nconfirmed{$sel} == 1);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf, $cb, $npkt{$sel})+1) * $Pidle_w;
+			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf, $npkt{$sel})+1) * $Pidle_w;
 		}
 		foreach my $g (keys %gcoords){
 			$surpressed{$sel}{$g} = 0;
@@ -528,7 +517,7 @@ while (1){
 				$nresponse{$dest} = 1;
 				print "# transmit power of $dest is set to $Ptx_l[$pow]\n" if ($debug == 1);
 			}
-			$nconsumption{$dest} += airtime($sel_sf, 500, $overhead_d+$extra_bytes) * ($Prx_w + $Pidle_w);
+			$nconsumption{$dest} += airtime($sel_sf, $overhead_d+$extra_bytes) * ($Prx_w + $Pidle_w);
 		}else{ # ack was not received
 			if ($nretransmissions{$dest} < $max_retr){
 				$nretransmissions{$dest} += 1;
@@ -546,18 +535,18 @@ while (1){
 		@{$overlaps{$sel}} = ();
 		# plan next transmission
 		my $new_ch = $ch;
-		if ($sf == 8 && $cb == 500){
-			$new_ch = 64 + int(rand(8)) while ($new_ch == $ch);
-		}else{
-			$new_ch = int(rand( (scalar @channels) - 8 )) while ($new_ch == $ch);
-		}
+# 		if ($sf == 8 && $cb == 500){
+# 			$new_ch = 64 + int(rand(8)) while ($new_ch == $ch);
+# 		}else{
+# 			$new_ch = int(rand( (scalar @channels) - 8 )) while ($new_ch == $ch);
+# 		}
 		$ch = $new_ch;
 		my $extra_bytes = 0;
 		if ($nresponse{$dest} == 1){
 			$extra_bytes = $adr;
 			$nresponse{$dest} = 0;
 		}
-		my $at = airtime($sf, $cb, $npkt{$dest}+$extra_bytes);
+		my $at = airtime($sf, $npkt{$dest}+$extra_bytes);
 		my $new_start = $sel_sta - $rwindow + $nperiod{$dest} + rand(1);
 		$new_start = $sel_sta - $rwindow + rand(3) if ($failed == 1 && $new_trans == 0);
 		if (($new_trans == 1) && ($new_start < $sim_time)){ # do not count transmissions that exceed the simulation time
@@ -566,15 +555,15 @@ while (1){
 		my $new_end = $new_start + $at;
 		my $i = 0;
 		foreach my $el (@{$sorted_t{$channels[$ch]}}){
-			my ($n, $sta, $end, $ch_, $cb, $sf_, $seq) = @$el;
+			my ($n, $sta, $end, $ch_, $sf_, $seq) = @$el;
 			last if ($sta > $new_start);
 			$i += 1;
 		}
-		splice(@{$sorted_t{$channels[$ch]}}, $i, 0, [$dest, $new_start, $new_end, $ch, $cb, $sf, $nunique{$dest}]);
+		splice(@{$sorted_t{$channels[$ch]}}, $i, 0, [$dest, $new_start, $new_end, $ch, $sf, $nunique{$dest}]);
 		$total_trans += 1 if ($new_start < $sim_time); # do not count transmissions that exceed the simulation time
 		$total_retrans += 1 if ($failed == 1);# && ($new_start < $sim_time)); 
 		print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
-		$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + (airtime($sf, $cb, $npkt{$dest})+1) * $Pidle_w;# if ($new_start < $sim_time);
+		$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + (airtime($sf, $npkt{$dest})+1) * $Pidle_w;# if ($new_start < $sim_time);
 	}
 }
 # print "---------------------\n";
@@ -633,7 +622,7 @@ sub gs_policy{ # gateway selection policy
 	my ($d_gw, $d_p) = (undef, -9999999999999);
 	my $cb = 125;
 	if ($win == 2){
-		$cb = 500;
+# 		$cb = 500;
 		# this is always when rx2sf=12 but the sensitivity of SF12BW500 is higher than some other SF/BW combinations
 		# The second line is safe if we assume that the transmission power of the gws is 30dBm (see min_sf() ).
 		if ($sel_sf < $rx2sf){
@@ -641,7 +630,7 @@ sub gs_policy{ # gateway selection policy
 		}
 		$sel_sf = $rx2sf;
 	}
-	my ($ack_sta, $ack_end) = ($sel_end+$win, $sel_end+$win+airtime($sel_sf, $cb, $overhead_d));
+	my ($ack_sta, $ack_end) = ($sel_end+$win, $sel_end+$win+airtime($sel_sf, $overhead_d));
 	my $min_resp = 1;
 	my @avail = ();
 	
@@ -729,7 +718,7 @@ sub node_col{ # handle node collisions
 			next;
 		}
 		foreach my $tr (@{$sorted_t{$channels[$sel_ch]}}){
-			my ($n, $sta, $end, $ch, $cb, $sf, $seq) = @$tr;
+			my ($n, $sta, $end, $ch, $sf, $seq) = @$tr;
 			last if ($sta > $sel_end);
 			if ($n =~ /^[0-9]/){ # node transmission
 				next if (($n == $sel) || ($sta > $sel_end) || ($end < $sel_sta) || ($ch != $sel_ch));
@@ -1001,23 +990,42 @@ sub read_data{
 
 sub read_data_custom{
 	my $terrain_file = $ARGV[2];
+	my $settings_file = $ARGV[3];
 	$norm_x = 1500;
 	$norm_y = $norm_x;
 	open(FH, "<$terrain_file") or die "Error: could not open terrain file $terrain_file\n";
 	my @nodes = ();
-	my @gateways = ();
-	my $gw_coords = <FH>;
-	my ($gwx, $gwy) = split(/ /, $gw_coords);
-	push (@gateways, ["A", $gwx, $gwy]);
-	while(my $line = <FH>){
-		my @node = split(/ /, $line);
-		my $pl = @node[-2];
-		my ($id, $nx, $ny, $sf) = @node;
-		$nsf{$id} = $sf;
-		$npkt{$id} = $pl;
-		print "$id, $nx, $ny, $sf, $npkt{$id}\n";
+	my @gw_coords = ();
+	while(<FH>){
+		if (/([0-9\.0-9]+) ([0-9\.0-9]+)/){
+			push (@gw_coords, [$1, $2]);
+		}else{
+			my @node = split(/ /, $_);
+			my $pl = $node[-2];
+			my ($id, $nx, $ny) = @node;
+			$npkt{$id} = $pl;
+		}
 	}
 	close(FH);
+	
+	my $mod = 0;
+	my $line = 0;
+	my $gw_name = "A";
+	my @gateways = ();
+	open(FH, "<$settings_file") or die "Error: could not open terrain file $settings_file\n";
+	while(<FH>){
+		if (/^[A-Z] ([0-9]+)/){
+			$gwsf{$gw_name} = $1;
+			$gwch{$gw_name} = $channels[$line % 3];
+			push (@gateways, [$gw_name, $gw_coords[$mod % 3][0], $gw_coords[$mod % 3][1]]);
+			$gw_name++;
+			$line++;
+			$mod+=1 if ($line % 3 == 0);
+		}elsif (/^([0-9]+) ([A-Z]+)/){
+			$nsf{$1} = $gwsf{$2};
+			$nch{$1} = $gwch{$2};
+		}
+	}
 	
 	my $conf_num = int($confirmed_perc * (scalar @nodes));
 	foreach my $node (@nodes){
@@ -1050,6 +1058,7 @@ sub read_data_custom{
 	}
 	foreach my $gw (@gateways){
 		my ($g, $x, $y) = @$gw;
+		# print "$g $x $y $gwsf{$g} $gwch{$g}\n";
 		$gcoords{$g} = [$x, $y];
 		@{$gunavailability{$g}} = ();
 		foreach my $n (keys %ncoords){
