@@ -1,11 +1,11 @@
 #!/usr/bin/perl -w
 
 ###################################################################################
-#          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                v2024.1.2-2.4                                    #
+#      Event-based simulator for (un)confirmed LoRaWAN 2.4GHz transmissions       #
+#                                    v2024.1.7                                    #
 #                                                                                 #
 # Features:                                                                       #
-# -- Multiple half-duplex gateways (3xuplink, 1xdownlink                          #
+# -- Multiple half-duplex gateways (3 x uplink, 1 x downlink transceivers)        #
 # -- Acks with two receive windows (RX1, RX2)                                     #
 # -- Non-orthogonal SF transmissions                                              #
 # -- Periodic or non-periodic (exponential) transmission rate                     #
@@ -31,7 +31,7 @@ use Term::ProgressBar 2.00;
 use GD::SVG;
 use Statistics::Basic qw(:all);
 
-die "usage: ./LoRaWAN-2.4.pl <packets_per_hour> <simulation_time(secs)> <terrain_file> <settings_file>\n" unless (scalar @ARGV == 4);
+die "usage: ./LoRaWAN-2.4.pl <packets_per_hour> <simulation_time(secs)> <terrain_file> <gw_settings_file>\n" unless (scalar @ARGV == 4);
 
 die "Packet rate must be higher than or equal to 1pkt per hour\n" if ($ARGV[0] < 1);
 die "Simulation time must be longer than or equal to 1h\n" if ($ARGV[1] < 3600);
@@ -227,13 +227,13 @@ while (1){
 			# check RX1
 			my ($sel_gw, $sel_p) = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 1);
 			if (defined $sel_gw){
-				my $gsf = $sel_sf;
-				my ($ack_sta, $ack_end) = ($sel_end+1, $sel_end+1+airtime($gsf, $overhead_d));
-				$total_down_time += airtime($gsf, $overhead_d);
+				$sel_gw = $sel_gw.4; # switch to the downlink transceiver
+				my ($ack_sta, $ack_end) = ($sel_end+1, $sel_end+1+airtime($sel_sf, $overhead_d));
+				$total_down_time += airtime($sel_sf, $overhead_d);
 				$rwindow = 1;
 				$gresponses{$sel_gw} += 1;
-				push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $sel_ch, $gsf, "d"]);
-				my $new_name = $sel_gw.$gresponses{$sel_gw}; # e.g. A1
+				push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $sel_ch, $sel_sf, "d"]);
+				my $new_name = $sel_gw."_".$gresponses{$sel_gw}; # e.g. A4_1
 				# place new transmission at the correct position
 				my $i = 0;
 				foreach my $el (@{$sorted_t{$channels[$sel_ch]}}){
@@ -250,12 +250,13 @@ while (1){
 				$no_rx1 += 1;
 				($sel_gw, $sel_p) = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 2);
 				if (defined $sel_gw){
+					$sel_gw = $sel_gw.4; # switch to the downlink transceiver
 					my ($ack_sta, $ack_end) = ($sel_end+2, $sel_end+2+airtime($rx2sf, $overhead_d));
 					$total_down_time += airtime($rx2sf, $overhead_d);
 					$rwindow = 2;
 					$gresponses{$sel_gw} += 1;
 					push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, 0, $rx2sf, "d"]);
-					my $new_name = $sel_gw.$gresponses{$sel_gw};
+					my $new_name = $sel_gw."_".$gresponses{$sel_gw};
 					my $i = 0;
 					foreach my $el (@{$sorted_t{$rx2ch}}){
 						my ($n, $sta, $end, $ch, $sf, $seq) = @$el;
@@ -274,27 +275,28 @@ while (1){
 				}
 			}
 			$prev_seq{$sel} = $sel_seq;
-			if (defined $sel_gw){
-				# ADR: the SF is already adjusted in min_sf; here only the transmit power is adjusted
-				my $gap = $sel_p - $sensis[$sel_sf-7][bwconv($bw)];
-				my $new_ptx = undef;
-				my $new_index = -1;
-				foreach my $p (sort {$a<=>$b} @Ptx_l){
-					$new_index += 1;
-					next if ($p >= $Ptx_l[$nptx{$sel}]); # we can only decrease power at the moment
-					if ($gap-$Ptx_l[$nptx{$sel}]+$p >= 12){
-						$new_ptx = $p;
-						last;
-					}
-				}
-				if (defined $new_ptx){
-					$gdest{$sel_gw}[-1][5] = $new_index;
-					print "# it will be suggested that $sel changes tx power to $Ptx_l[$new_index]\n" if ($debug == 1);
-				}
-			}
+# 			if (defined $sel_gw){
+# 				# ADR: the SF is already adjusted in min_sf; here only the transmit power is adjusted
+# 				my $gap = $sel_p - $sensis[$sel_sf-7][bwconv($bw)];
+# 				my $new_ptx = undef;
+# 				my $new_index = -1;
+# 				foreach my $p (sort {$a<=>$b} @Ptx_l){
+# 					$new_index += 1;
+# 					next if ($p >= $Ptx_l[$nptx{$sel}]); # we can only decrease power at the moment
+# 					if ($gap-$Ptx_l[$nptx{$sel}]+$p >= 12){
+# 						$new_ptx = $p;
+# 						last;
+# 					}
+# 				}
+# 				if (defined $new_ptx){
+# 					$gdest{$sel_gw}[-1][5] = $new_index;
+# 					print "# it will be suggested that $sel changes tx power to $Ptx_l[$new_index]\n" if ($debug == 1);
+# 				}
+# 			}
 		}elsif ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 0)){ # successful transmission but no ack is required
 			$successful += 1;
 			$nacked{$sel} += 1;
+			printf "# $sel 's transmission received by %d gateway(s) (channel $channels[$sel_ch])\n", scalar @$gw_rc if ($debug == 1);
 			
 			# remove the examined tuple of gw unavailability
 			foreach my $gwpr (@$gw_rc){
@@ -381,8 +383,8 @@ while (1){
 		
 	}else{ # if the packet is a gw transmission
 		
-		
-		$sel =~ s/[0-9].*//; # keep only the letter(s)
+		$sel =~ s/_[0-9]+//; # keep only the gw id
+		print "$sel \n";
 		# remove the unnecessary tuples from gw unavailability
 		my @indices = ();
 		my $index = 0;
@@ -412,8 +414,8 @@ while (1){
 		splice @{$gdest{$sel}}, $index, 1;
 		# check if the transmission can reach the node
 		my $G = random_normal(1, 0, 1);
-		my $d = distance($gcoords{$sel.1}[0], $ncoords{$dest}[0], $gcoords{$sel.1}[1], $ncoords{$dest}[1]);
-		my $prx = 14 - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
+		my $d = distance($gcoords{$sel}[0], $ncoords{$dest}[0], $gcoords{$sel}[1], $ncoords{$dest}[1]);
+		my $prx = 12.5 - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
 		if ($prx < $sensis[$sel_sf-7][2]){
 			print "# ack didn't reach node $dest\n" if ($debug == 1);
 			$failed = 1;
@@ -422,7 +424,7 @@ while (1){
 		foreach my $tr (@{$sorted_t{$channels[$ch]}}){
 			my ($n, $sta, $end, $ch_, $sf_, $seq) = @$tr;
 			last if ($sta > $sel_end);
-			$n =~ s/[0-9].*// if ($n =~ /^[A-Z]/);
+			$n =~ s/_[0-9]+// if ($n =~ /^[A-Z]/);
 			next if (($n eq $sel) || ($end < $sel_sta) || ($ch_ != $ch)); # skip non-overlapping transmissions or different channels
 			
 			if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end)) ){
@@ -447,7 +449,7 @@ while (1){
 				$d_ = distance($ncoords{$dest}[0], $ncoords{$n}[0], $ncoords{$dest}[1], $ncoords{$n}[1]);
 				$p = $Ptx_l[$nptx{$n}];
 			}else{
-				$d_ = distance($ncoords{$dest}[0], $gcoords{$n.1}[0], $ncoords{$dest}[1], $gcoords{$n.1}[1]);
+				$d_ = distance($ncoords{$dest}[0], $gcoords{$n}[0], $ncoords{$dest}[1], $gcoords{$n}[1]);
 				$p = 12.5;
 			}
 			my $prx_ = $p - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var);
@@ -514,13 +516,6 @@ while (1){
 		}
 		@{$overlaps{$sel}} = ();
 		# plan next transmission
-		my $new_ch = $ch;
-# 		if ($sf == 8 && $cb == 500){
-# 			$new_ch = 64 + int(rand(8)) while ($new_ch == $ch);
-# 		}else{
-# 			$new_ch = int(rand( (scalar @channels) - 8 )) while ($new_ch == $ch);
-# 		}
-		$ch = $new_ch;
 		my $extra_bytes = 0;
 		if ($nresponse{$dest} == 1){
 			$extra_bytes = $adr;
@@ -571,18 +566,24 @@ print "No GW available in RX1 or RX2 = $no_rx2 times\n";
 print "Total downlink time = $total_down_time sec\n";
 printf "Script execution time = %.4f secs\n", $finish_time - $start_time;
 print "-----\n";
+my @fairs = ();
+foreach my $n (keys %ncoords){
+	if ($nconfirmed{$n} == 0){
+		push(@fairs, $nacked{$n}/$nunique{$n});
+	}
+}
+printf "Fairness = %.3f\n", stddev(\@fairs);
 if ($confirmed_perc > 0){
 	foreach my $g (sort keys %gcoords){
 		print "GW $g sent out $gresponses{$g} acks\n";
 	}
-	my @fairs = ();
+	@fairs = ();
 	my $avgretr = 0;
 	foreach my $n (keys %ncoords){
 		next if ($nconfirmed{$n} == 0);
 		$appsuccess{$n} = 1 if ($appsuccess{$n} == 0);
 		push(@fairs, $appacked{$n}/$appsuccess{$n});
 		$avgretr += $ntotretr{$n}/$nunique{$n};
-		#print "$n $ntotretr{$n} $nunique{$n} \n";
 	}
 	printf "Downlink fairness = %.3f\n", stddev(\@fairs);
 	printf "Avg number of retransmissions = %.3f\n", $avgretr/(scalar keys %ntotretr);
@@ -610,10 +611,9 @@ sub gs_policy{ # gateway selection policy
 	my $min_resp = 1;
 	my @avail = ();
 	
-	# check for available gws (gws that are not already scheduled for other transmissions)
+	# check for available gws (gws that are not currently receiving)
 	foreach my $g (@$gw_rc){
 		my ($gw, $p) = @$g;
-		$gw =~ s/[0-9].*//; # keep only the letter(s)
 		my $is_avail = 1;
 		foreach my $gu (@{$gunavailability{$gw}}){
 			my ($sta, $end, $ch, $sf, $m) = @$gu;
@@ -661,7 +661,7 @@ sub gs_policy{ # gateway selection policy
 			}
 		}
 	}
-	return ($d_gw, $d_p);
+	return ($d_gw, $d_p); # return gw ids without the transceiver number (e.g. A instead of A1)
 }
 
 sub node_col{ # handle node collisions
@@ -669,7 +669,7 @@ sub node_col{ # handle node collisions
 	# check for collisions with other transmissions (time, SF, power) per gw
 	my @gw_rc = ();
 	foreach my $gw (keys %gcoords){
-		next if (($surpressed{$sel}{$gw} == 1) || ($gwsf{$gw} != $sel_sf) || ($gw_mode{$gw} eq 'd'));
+		next if (($surpressed{$sel}{$gw} == 1) || ($gwsf{$gw} != $sel_sf) || ($gwch{$gw} != $sel_ch) || ($gw_mode{$gw} eq 'd'));
 		my $d = distance($gcoords{$gw}[0], $ncoords{$sel}[0], $gcoords{$gw}[1], $ncoords{$sel}[1]);
 		my $G = random_normal(1, 0, 1);
 		my $prx = $Ptx_l[$nptx{$sel}] - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
@@ -699,7 +699,7 @@ sub node_col{ # handle node collisions
 			my ($n, $sta, $end, $ch, $sf, $seq) = @$tr;
 			last if ($sta > $sel_end);
 			if ($n =~ /^[0-9]/){ # node transmission
-				next if (($n == $sel) || ($sta > $sel_end) || ($end < $sel_sta) || ($ch != $sel_ch));
+				next if (($n == $sel) || ($sta > $sel_end) || ($end < $sel_sta) || ($ch != $sel_ch) || ($sf != $sel_sf));
 				my $overlap = 0;
 				# time overlap
 				if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end)) ){
@@ -724,9 +724,8 @@ sub node_col{ # handle node collisions
 					}
 				}
 			}else{ # n is a gw in this case
-				my $nn = $n;
-				$n =~ s/[0-9].*//; # keep only the letter(s)
-				next if (($nn eq $gw) || ($sta > $sel_end) || ($end < $sel_sta) || ($ch != $sel_ch));
+				$n =~ s/_[0-9]+//; # keep only the gw id
+				next if (($n eq $gw) || ($sta > $sel_end) || ($end < $sel_sta) || ($ch != $sel_ch));
 				# time overlap
 				if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end)) ){
 					my $already_there = 0;
@@ -740,14 +739,14 @@ sub node_col{ # handle node collisions
 					if ($already_there == 0){
 						push(@{$overlaps{$sel}}, [$n, $G_, $sf]); # put in here all overlapping transmissions
 					}
-					push(@{$overlaps{$nn}}, [$sel, $G, $sel_sf]); # check future possible collisions with those transmissions
+					push(@{$overlaps{$n}}, [$sel, $G, $sel_sf]); # check future possible collisions with those transmissions
 				}
 				foreach my $ng (@{$overlaps{$sel}}){
 					my ($n, $G_, $sf_) = @$ng;
 					my $overlap = 1;
 					# power 
 					my $d_ = distance($gcoords{$gw}[0], $gcoords{$n}[0], $gcoords{$gw}[1], $gcoords{$n}[1]);
-					my $prx_ = 14 - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var);
+					my $prx_ = 12.5 - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var);
 					if ($overlap == 1){
 						if ((abs($prx - $prx_) <= $thresholds[$sel_sf-7][$sf_-7]) ){ # both collide
 							$surpressed{$sel}{$gw} = 1;
@@ -929,9 +928,9 @@ sub read_data{
 sub read_data_custom{
 	my $terrain_file = $ARGV[2];
 	my $settings_file = $ARGV[3];
-	$norm_x = 1500;
-	$norm_y = $norm_x;
 	open(FH, "<$terrain_file") or die "Error: could not open terrain file $terrain_file\n";
+	$norm_x = 1500; #<FH>;
+	$norm_y = $norm_x;
 	my @nodes = ();
 	my @gw_coords = ();
 	while(<FH>){
@@ -968,7 +967,7 @@ sub read_data_custom{
 			if ($transceiver == 4){
 				$gw_name = $gw_prefix.$transceiver;
 				push (@gateways, [$gw_name, $gw_coords[$mod % 3][0], $gw_coords[$mod % 3][1]]);
-				$gwsf{$gw_name} = 12; # give a temporary SF to the downlink transceiver
+				$gwsf{$gw_name} = $rx2sf; # give a temporary SF to the downlink transceiver
 				$gw_mode{$gw_name} = 'd';
 				$mod += 1;
 				$transceiver = 1;
@@ -1017,7 +1016,6 @@ sub read_data_custom{
 		foreach my $n (keys %ncoords){
 			$surpressed{$n}{$g} = 0;
 		}
-		$g =~ s/[0-9].*//; # keep only the letter(s)
 		@{$gunavailability{$g}} = ();
 		@{$overlaps{$g}} = ();
 		$gresponses{$g} = 0;

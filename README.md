@@ -22,6 +22,5 @@ A LoRaWAN simulator for 2.4GHz LoRa transceivers (Work in progress!)
 
 ## Usage:
 ```
-perl generate_terrain.pl terrain_side_size_(m) num_of_nodes num_of_gateways > terrain.txt
-perl LoRaWAN.pl packets_per_hour simulation_time(secs) ack_policy(1-3) terrain.txt
+perl LoRaWAN.pl packets_per_hour simulation_time(secs) terrain_file.txt gw_settings_file.txt
 ```
