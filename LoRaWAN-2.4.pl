@@ -31,6 +31,11 @@ use Term::ProgressBar 2.00;
 use GD::SVG;
 use Statistics::Basic qw(:all);
 
+### You need two files to be given as arguments to run the simulator:
+### 1) A terrain file with gateway and node coordinates + nodes payload
+### 2) A gateway settings file with the SF per transceiver and node
+### see read_data_custom() below
+
 die "usage: ./LoRaWAN-2.4.pl <packets_per_hour> <simulation_time(secs)> <terrain_file> <gw_settings_file>\n" unless (scalar @ARGV == 4);
 
 die "Packet rate must be higher than or equal to 1pkt per hour\n" if ($ARGV[0] < 1);
