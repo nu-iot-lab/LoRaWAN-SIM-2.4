@@ -31,12 +31,8 @@ use Term::ProgressBar 2.00;
 use GD::SVG;
 use Statistics::Basic qw(:all);
 
-### You need two files to be given as arguments to run the simulator:
-### 1) A terrain file with gateway and node coordinates + nodes payload
-### 2) A gateway settings file with the SF per transceiver and node
-### see read_data_custom() below
-
-die "usage: ./LoRaWAN-2.4.pl <packets_per_hour> <simulation_time(secs)> <terrain_file> <gw_settings_file>\n" unless (scalar @ARGV == 4);
+# Give 3 or 4 arguments (if 4 arguments are given, the terrain file format is different than the usual one)
+die "usage: ./LoRaWAN-2.4.pl <packets_per_hour> <simulation_time(secs)> <terrain_file> <gw_settings_file_(optional)>\n" unless (scalar @ARGV > 2);
 
 die "Packet rate must be higher than or equal to 1pkt per hour\n" if ($ARGV[0] < 1);
 die "Simulation time must be longer than or equal to 1h\n" if ($ARGV[1] < 3600);
@@ -82,9 +78,10 @@ my $Pidle_w = 30 * 3.3; # this is actually the consumption of the microcontrolle
 my @channels = (2403000000, 2425000000, 2479000000); # 3 uplink channels for the 3 available uplink transceivers
 my $rx2sf = 9; # SF used for RX2 
 my $rx2ch = 2450000000; # channel used for RX2
+my @avail_sfs = (8, 10, 12); # SF8, 10, and 12 for the 3 uplink transceivers, respectively (unless a custom settings file is used)
 
 # packet specific parameters
-my @fpl = (242, 242, 125, 53, 11); # max uplink frame payload per DR(4-0) (bytes)
+my $fpl = 242; # max uplink frame payload (bytes)
 my $preamble = 12; # in symbols
 my $H = 0; # header 0/1
 my $hcrc = 0; # HCRC bytes
@@ -105,7 +102,7 @@ my $confirmed_perc = 0; # percentage of nodes that require confirmed transmissio
 my $full_collision = 1; # take into account non-orthogonal SF transmissions or not
 my $period = 3600/$ARGV[0]; # time period between transmissions
 my $sim_time = $ARGV[1]; # given simulation time
-my $debug = 0; # enable debug mode
+my $debug = 1; # enable debug mode
 my $sim_end = 0;
 my ($terrain, $norm_x, $norm_y) = (0, 0, 0); # terrain side, normalised terrain side
 my $start_time = time; # just for statistics
@@ -150,7 +147,14 @@ if ($progress_bar == 1){
 }
 my $next_update = 0;
 
-read_data_custom();
+if (scalar @ARGV == 3){
+	read_data();
+	foreach my $n (keys %ncoords){
+		$nsf{$n} = min_sf($n);
+	}
+}else{
+	read_data_custom();
+}
 
 # first transmission
 my @init_trans = ();
@@ -324,13 +328,11 @@ while (1){
 				last if ($sta > $sel_sta);
 				$i += 1;
 			}
-			if ($sel_sta < $sim_time){
-				$nunique{$sel} += 1; # do not count transmissions that exceed the simulation time;
-				splice(@{$sorted_t{$channels[$sel_ch]}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
-				$total_trans += 1;
-				print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-				$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf, $npkt{$sel})+1) * $Pidle_w;
-			}
+			$nunique{$sel} += 1 if ($sel_sta < $sim_time); # do not count transmissions that exceed the simulation time;
+			splice(@{$sorted_t{$channels[$sel_ch]}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
+			$total_trans += 1 if ($sel_sta < $sim_time); 
+			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
+			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf, $npkt{$sel})+1) * $Pidle_w;
 		}else{ # non-successful transmission
 			$failed = 1;
 		}
@@ -577,7 +579,7 @@ foreach my $n (keys %ncoords){
 		push(@fairs, $nacked{$n}/$nunique{$n});
 	}
 }
-printf "Fairness = %.3f\n", stddev(\@fairs);
+printf "Unfairness = %.3f\n", stddev(\@fairs);
 if ($confirmed_perc > 0){
 	foreach my $g (sort keys %gcoords){
 		print "GW $g sent out $gresponses{$g} acks\n";
@@ -687,7 +689,7 @@ sub node_col{ # handle node collisions
 		my $is_available = 1;
 		foreach my $gu (@{$gunavailability{$gw}}){
 			my ($sta, $end, $ch, $sf, $m) = @$gu;
-			if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end))){
+			if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta < $sta) && ($sel_end > $end))){
 				# the gw has locked to another transmission with the same ch/sf
 				if ( ($m eq "u") && ($sel_ch == $ch) && ($sel_sf == $sf) ){
 					$is_available = 0;
@@ -704,15 +706,15 @@ sub node_col{ # handle node collisions
 			my ($n, $sta, $end, $ch, $sf, $seq) = @$tr;
 			last if ($sta > $sel_end);
 			if ($n =~ /^[0-9]/){ # node transmission
-				next if (($n == $sel) || ($sta > $sel_end) || ($end < $sel_sta) || ($ch != $sel_ch) || ($sf != $sel_sf));
+				next if (($n == $sel) || ($end < $sel_sta) || ($sf != $sel_sf));
 				my $overlap = 0;
 				# time overlap
-				if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end)) ){
+				if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta < $sta) && ($sel_end > $end)) ){
 					$overlap = 1;
 				}
 				# power 
 				my $d_ = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
-				my $prx_ = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d_/$dref) + rand(1)*$var);
+				my $prx_ = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d_/$dref) + random_normal(1, 0, 1)*$var);
 				if ($overlap == 1){
 					if ((abs($prx - $prx_) <= $thresholds[$sel_sf-7][$sf-7]) ){ # both collide
 						$surpressed{$sel}{$gw} = 1;
@@ -730,9 +732,9 @@ sub node_col{ # handle node collisions
 				}
 			}else{ # n is a gw in this case
 				$n =~ s/_[0-9]+//; # keep only the gw id
-				next if (($n eq $gw) || ($sta > $sel_end) || ($end < $sel_sta) || ($ch != $sel_ch));
+				next if (($n eq $gw) || ($sta > $sel_end) || ($end < $sel_sta) || ($ch != $sel_ch) || ($sf != $sel_sf));
 				# time overlap
-				if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end)) ){
+				if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta < $sta) && ($sel_end > $end)) ){
 					my $already_there = 0;
 					my $G_ = random_normal(1, 0, 1);
 					foreach my $ng (@{$overlaps{$sel}}){
@@ -787,21 +789,28 @@ sub min_sf{
 	my $sf = 13;
 	my $bwi = bwconv($bw);
 	foreach my $gw (keys %gcoords){
+		next if ($gw_mode{$gw} eq 'u'); # just make it faster
 		my $gf = 13;
 		my $d0 = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
-		for (my $f=7; $f<=12; $f+=1){
+		foreach my $f (@avail_sfs){
 			my $S = $sensis[$f-7][$bwi];
 			my $Prx = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d0/$dref) + $Xs);
 			if (($Prx - 10) > $S){ # 10dBm tolerance
 				$gf = $f;
-				$f = 13;
 				last;
 			}
 		}
 		$sf = $gf if ($gf < $sf);
 	}
+	if ($sf == 13){
+		print "node $n unreachable!\n";
+		print "terrain too large?\n";
+		exit;
+	}
 	# check which gateways can be reached with rx2sf
 	foreach my $gw (keys %gcoords){
+		$nch{$n} = $gwch{$gw} if ($gwsf{$gw} == $sf);
+		next if ($gw_mode{$gw} eq 'u');
 		my $d0 = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
 		my $S = $sensis[$rx2sf-7][$bwi];
 		my $Prx = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d0/$dref) + $Xs);
@@ -809,21 +818,18 @@ sub min_sf{
 			push(@{$nreachablegws{$n}}, [$gw, $Prx]);
 		}
 	}
-	if ($sf == 13){
-		print "node $n unreachable!\n";
-		print "terrain too large?\n";
-		exit;
-	}
 	if ($fixed_packet_size == 0){
 		if ($packet_size_distr eq "uniform"){
-			$npkt{$n} = int(rand($fpl[$sf-7]));
+			$npkt{$n} = int(rand($fpl));
 		}elsif ($packet_size_distr eq "normal"){
 			$npkt{$n} = int(random_normal(1, $packet_size, 10));
 		}
 	}else{
 		$npkt{$n} = $packet_size;
 	}
-	$npkt{$n} = $fpl[$sf-7] if (($npkt{$n} > $fpl[$sf-7]) || ($npkt{$n} < 1));
+	while ($npkt{$n} % 16 > 0){
+		$npkt{$n} += 1;
+	}
 	$npkt{$n} += $overhead_u;
 	print "# $n can reach a gw with SF$sf\n" if ($debug == 1);
 	$sf_distr[$sf-7] += 1;
@@ -873,7 +879,7 @@ sub read_data{
 				$terrain = $1;
 			}
 			$norm_x = sqrt($terrain);
-			$norm_y = sqrt($terrain);
+			$norm_y = $norm_x;
 		} elsif (/^# node coords: (.*)/){
 			my $sensor_coord = $1;
 			my @coords = split(/\] /, $sensor_coord);
@@ -885,6 +891,26 @@ sub read_data{
 		}
 	}
 	close(FH);
+	
+	foreach my $gw (@gateways){
+		my ($gor, $x, $y) = @$gw;
+		my @sfs = @avail_sfs;
+		for (my $i=1; $i<=4; $i++){
+			my $g = $gor.$i;
+			$gcoords{$g} = [$x, $y];
+			@{$gunavailability{$g}} = ();
+			@{$overlaps{$g}} = ();
+			$gresponses{$g} = 0;
+			if ($i < 4){
+				$gw_mode{$g} = 'u';
+				$gwch{$g} = $i-1;
+				$gwsf{$g} = shift(@sfs);
+			}else{
+				$gw_mode{$g} = 'd';
+				$gwsf{$g} = $rx2sf;
+			}
+		}
+	}
 	
 	my $conf_num = int($confirmed_perc * (scalar @nodes));
 	foreach my $node (@nodes){
@@ -914,16 +940,9 @@ sub read_data{
 		}else{
 			$nperiod{$n} = $period;
 		}
-	}
-	foreach my $gw (@gateways){
-		my ($g, $x, $y) = @$gw;
-		$gcoords{$g} = [$x, $y];
-		@{$gunavailability{$g}} = ();
-		foreach my $n (keys %ncoords){
+		foreach my $g (keys %gcoords){
 			$surpressed{$n}{$g} = 0;
 		}
-		@{$overlaps{$g}} = ();
-		$gresponses{$g} = 0;
 	}
 	for (my $i=7; $i<13; $i++){
 		$sf_retrans{$i} = 0;
@@ -957,7 +976,7 @@ sub read_data_custom{
 	my $transceiver = 1;
 	my $temp_letter; #
 	my @gateways = ();
-	open(FH, "<$settings_file") or die "Error: could not open terrain file $settings_file\n";
+	open(FH, "<$settings_file") or die "Error: could not open settings file $settings_file\n";
 	while(<FH>){
 		if (/^([A-Z]+) ([0-9]+)/){
 			$temp_letter = $1; #
