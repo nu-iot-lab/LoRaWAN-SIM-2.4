@@ -76,7 +76,7 @@ my @Ptx_w = (40*3.3, 58*3.3, 70*3.3); # Ptx cons. for 0, 10, 12.5 dBm (mW)
 my $Prx_w = 40 * 3.3;
 my $Pidle_w = 30 * 3.3; # this is actually the consumption of the microcontroller in idle mode
 my @channels = (2403000000, 2425000000, 2479000000); # 3 uplink channels for the 3 available uplink transceivers
-my $rx2sf = 9; # SF used for RX2 
+my $rx2sf = 12; # SF used for RX2 
 my $rx2ch = 2450000000; # channel used for RX2
 my @avail_sfs = (8, 10, 12); # SF8, 10, and 12 for the 3 uplink transceivers, respectively (unless a custom settings file is used)
 
@@ -119,7 +119,7 @@ my $total_down_time = 0; # total downlink time
 my $progress_bar = 0; # activate progress bar (slower!)
 my $avg_sf = 0;
 my @sf_distr = (0, 0, 0, 0, 0, 0);
-my $fixed_packet_size = 0; # all nodes have the same packet size defined in @fpl (=1) or a randomly selected (=0)
+my $fixed_packet_size = 1; # all nodes have the same packet size defined in @fpl (=1) or a randomly selected (=0)
 my $packet_size = 16; # default packet size if fixed_packet_size=1 or avg packet size if fixed_packet_size=0 (Bytes)
 my $packet_size_distr = "normal"; # uniform / normal (applicable if fixed_packet_size=0)
 my $avg_pkt = 0; # actual average packet size
@@ -563,7 +563,7 @@ print "Total number of re-transmissions = $total_retrans\n" if ($confirmed_perc 
 printf "Total number of unique transmissions = %d\n", (sum values %nunique);
 printf "Stdv of unique transmissions = %.2f\n", stddev(values %nunique);
 print "Total packets delivered = $successful\n";
-printf "Total packets acknowledged = %d\n", (sum values %nacked);
+printf "Total packets delivered and acknowledged = %d\n", (sum values %nacked) if ($confirmed_perc > 0);
 print "Total confirmed packets dropped = $dropped\n";
 print "Total unconfirmed packets dropped = $dropped_unc\n";
 printf "Packet Delivery Ratio = %.5f\n", (sum values %nacked)/(sum values %nunique); # unique packets delivered / unique packets transmitted
@@ -963,7 +963,7 @@ sub read_data_custom{
 		if (scalar @items == 2){
 			push (@gw_coords, [$items[0], $items[1]]);
 		}else{
-			my $pl = $items[-2];
+			my $pl = 16;#$items[-1];
 			my ($id, $nx, $ny) = @items;
 			$npkt{$id} = $pl;
 			push (@nodes, [$id, $nx, $ny]);
@@ -1007,6 +1007,8 @@ sub read_data_custom{
 	my $conf_num = int($confirmed_perc * (scalar @nodes));
 	foreach my $node (@nodes){
 		my ($n, $x, $y) = @$node;
+		$npkt{$n} += $overhead_u;
+		$sf_distr[$nsf{$n}-7] += 1;
 		$ncoords{$n} = [$x, $y];
 		@{$overlaps{$n}} = ();
 		$nptx{$n} = scalar @Ptx_l - 1; # start with the highest Ptx

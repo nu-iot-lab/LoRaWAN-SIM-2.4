@@ -20,7 +20,8 @@ A LoRaWAN simulator for 2.4GHz LoRa transceivers (Work in progress!)
 - https://metacpan.org/pod/Term::ProgressBar
 - https://metacpan.org/pod/GD::SVG
 
-## Usage:
+## Usage example:
 ```
-perl LoRaWAN.pl packets_per_hour simulation_time(secs) terrain_file.txt gw_settings_file.txt
+perl generate_terrain.pl 800 100 1 > terrain.txt
+perl LoRaWAN.pl 12 10000 terrain.txt
 ```
