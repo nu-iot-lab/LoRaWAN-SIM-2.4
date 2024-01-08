@@ -676,7 +676,8 @@ sub node_col{ # handle node collisions
 	# check for collisions with other transmissions (time, SF, power) per gw
 	my @gw_rc = ();
 	foreach my $gw (keys %gcoords){
-		next if (($surpressed{$sel}{$gw} == 1) || ($gwsf{$gw} != $sel_sf) || ($gwch{$gw} != $sel_ch) || ($gw_mode{$gw} eq 'd'));
+		next if ($gw_mode{$gw} eq 'd');
+		next if (($surpressed{$sel}{$gw} == 1) || ($gwsf{$gw} != $sel_sf) || ($gwch{$gw} != $sel_ch));
 		my $d = distance($gcoords{$gw}[0], $ncoords{$sel}[0], $gcoords{$gw}[1], $ncoords{$sel}[1]);
 		my $G = random_normal(1, 0, 1);
 		my $prx = $Ptx_l[$nptx{$sel}] - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
@@ -963,7 +964,7 @@ sub read_data_custom{
 		if (scalar @items == 2){
 			push (@gw_coords, [$items[0], $items[1]]);
 		}else{
-			my $pl = 16;#$items[-1];
+			my $pl = $items[-1];
 			my ($id, $nx, $ny) = @items;
 			$npkt{$id} = $pl;
 			push (@nodes, [$id, $nx, $ny]);
