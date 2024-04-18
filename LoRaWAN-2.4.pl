@@ -2,7 +2,7 @@
 
 ###################################################################################
 #      Event-based simulator for (un)confirmed LoRaWAN 2.4GHz transmissions       #
-#                                    v2024.1.7                                    #
+#                                    v2024.4.17                                   #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways (3 x uplink, 1 x downlink transceivers)        #
@@ -67,7 +67,7 @@ my %gw_mode = (); # GW mode (uplink/downlink)
 my @sensis = ([7,-112,-106], [8,-115,-109], [9,-117,-111], [10,-120,-114], [11,-123,-117], [12,-126,-120]); # sensitivities [SF, BW812, BW1625]
 my @thresholds = ([1,-8,-9,-9,-9,-9], [-11,1,-11,-12,-13,-13], [-15,-13,1,-13,-14,-15], [-19,-18,-17,1,-17,-18], [-22,-22,-21,-20,1,-20], [-25,-25,-25,-24,-23,1]); # capture effect power thresholds per SF[SF] for non-orthogonal transmissions
 my $var = 3.57; # variance
-my ($dref, $Lpld0, $gamma) = (40, 100, 2.3); # attenuation model parameters
+my ($dref, $Lpld0, $gamma) = (40, 90, 2.3); # attenuation model parameters
 my $max_retr = 8; # max number of retransmissions per packet (default value = 1)
 my $bw = 812500; # channel bandwidth
 my $cr = 1; # Coding Rate
@@ -189,14 +189,8 @@ while (1){
 	# select the channel with earliest transmission among all first transmissions
 	my @earliest = (sort {$sorted_t{$a}[0][1] <=> $sorted_t{$b}[0][1]} keys %sorted_t);
 	my $min_ch = shift(@earliest);
-	my $cardi = scalar @earliest;
+	last if (!defined $min_ch);
 	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @{shift(@{$sorted_t{$min_ch}})};
-	while (!defined $sel){
-		print "# Channel $min_ch has no transmissions in the queue!\n" if ($debug == 1);
-		delete $sorted_t{$min_ch} if (scalar @{$sorted_t{$min_ch}} == 0);
-		$min_ch = shift(@earliest);
-		($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @{shift(@{$sorted_t{$min_ch}})};
-	}
 	$next_update = $progress->update($sel_end) if ($progress_bar == 1);
 	if ($sel_sta > $sim_time){
 		if ($progress_bar == 1){
