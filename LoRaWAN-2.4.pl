@@ -67,7 +67,7 @@ my %gw_mode = (); # GW mode (uplink/downlink)
 my @sensis = ([7,-112,-106], [8,-115,-109], [9,-117,-111], [10,-120,-114], [11,-123,-117], [12,-126,-120]); # sensitivities [SF, BW812, BW1625]
 my @thresholds = ([1,-8,-9,-9,-9,-9], [-11,1,-11,-12,-13,-13], [-15,-13,1,-13,-14,-15], [-19,-18,-17,1,-17,-18], [-22,-22,-21,-20,1,-20], [-25,-25,-25,-24,-23,1]); # capture effect power thresholds per SF[SF] for non-orthogonal transmissions
 my $var = 3.57; # variance
-my ($dref, $Lpld0, $gamma) = (40, 90, 2.3); # attenuation model parameters
+my ($dref, $Lpld0, $gamma) = (40, 100, 2.3); # attenuation model parameters
 my $max_retr = 8; # max number of retransmissions per packet (default value = 1)
 my $bw = 812500; # channel bandwidth
 my $cr = 1; # Coding Rate
@@ -567,18 +567,22 @@ print "No GW available in RX1 or RX2 = $no_rx2 times\n";
 print "Total downlink time = $total_down_time sec\n";
 printf "Script execution time = %.4f secs\n", $finish_time - $start_time;
 print "-----\n";
-my @fairs = ();
+my %fairs = (0 => [], 1 => [], 2 => []);
 foreach my $n (keys %ncoords){
 	if ($nconfirmed{$n} == 0){
-		push(@fairs, $nacked{$n}/$nunique{$n});
+		push(@{$fairs{$nch{$n}}}, $nacked{$n}/$nunique{$n});
 	}
 }
-printf "Unfairness = %.3f\n", stddev(\@fairs);
+my ($fair1, $fair2, $fair3) = (stddev(\@{$fairs{0}}), stddev(\@{$fairs{1}}), stddev(\@{$fairs{2}}));
+printf "PDR CH1 = %.3f\n", average(\@{$fairs{0}});
+printf "PDR CH2 = %.3f\n", average(\@{$fairs{1}});
+printf "PDR CH3 = %.3f\n", average(\@{$fairs{2}});
+printf "Unfairness = %.3f\n", max($fair1, $fair2, $fair3) - min($fair1, $fair2, $fair3);
 if ($confirmed_perc > 0){
 	foreach my $g (sort keys %gcoords){
 		print "GW $g sent out $gresponses{$g} acks\n";
 	}
-	@fairs = ();
+	my @fairs = ();
 	my $avgretr = 0;
 	foreach my $n (keys %ncoords){
 		next if ($nconfirmed{$n} == 0);
