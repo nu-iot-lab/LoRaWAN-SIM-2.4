@@ -2,7 +2,7 @@
 
 ###################################################################################
 #      Event-based simulator for (un)confirmed LoRaWAN 2.4GHz transmissions       #
-#                                    v2024.4.17                                   #
+#                                    v2024.5.31                                   #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways (3 x uplink, 1 x downlink transceivers)        #
@@ -27,7 +27,6 @@ use POSIX;
 use List::Util qw(min max sum);
 use Time::HiRes qw(time);
 use Math::Random qw(random_uniform random_exponential random_normal);
-use Term::ProgressBar 2.00;
 use GD::SVG;
 use Statistics::Basic qw(:all);
 
@@ -48,6 +47,7 @@ my %nresponse = (); # 0/1 (1 = ADR response will be sent)
 my %nconfirmed = (); # confirmed transmissions or not
 my %nunique = (); # unique transmissions per node (equivalent to FCntUp)
 my %nacked = (); # unique acked packets (for confirmed transmissions) or just delivered (for non-confirmed transmissions)
+my %ndeliv = (); # unique delivered packets (for non-confirmed transmissions)
 my %nperiod = (); 
 my %npkt = (); # packet size per node
 my %ntotretr = (); # number of retransmissions per node (total)
@@ -116,7 +116,6 @@ my $no_rx2 = 0; # no gw was available in RX1 or RX2
 my $picture = 0; # generate an energy consumption map
 my $fixed_packet_rate = 1; # send packets periodically with a fixed rate (=1) or at random (=0)
 my $total_down_time = 0; # total downlink time
-my $progress_bar = 0; # activate progress bar (slower!)
 my $avg_sf = 0;
 my @sf_distr = (0, 0, 0, 0, 0, 0);
 my $fixed_packet_size = 1; # all nodes have the same packet size defined in @fpl (=1) or a randomly selected (=0)
@@ -135,17 +134,6 @@ my %appacked = (); # counts the number of acked packets per node
 my %appsuccess = (); # counts the number of packets that received from at least one gw per node
 my %nogwavail = (); # counts how many time no gw was available (keys = nodes)
 
-my $progress;
-if ($progress_bar == 1){
-	$progress = Term::ProgressBar->new({
-		count => $sim_time,
-		ETA   => 'linear',
-		remove => 1
-	});
-	$progress->minor(0);
-	$progress->max_update_rate(1);
-}
-my $next_update = 0;
 
 if (scalar @ARGV == 3){
 	read_data();
@@ -191,24 +179,23 @@ while (1){
 	my $min_ch = shift(@earliest);
 	last if (!defined $min_ch);
 	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @{shift(@{$sorted_t{$min_ch}})};
-	$next_update = $progress->update($sel_end) if ($progress_bar == 1);
-	if ($sel_sta > $sim_time){
-		if ($progress_bar == 1){
-			$next_update = $progress->update($sim_time);
-			$progress->update($sim_time);
+	if (exists $ncoords{$sel}){ # just a progress trick
+		if ($sel == 1){
+			$| = 1;
+			printf "%.2f%%\r", 100*$sel_end/$sim_time;
 		}
-		last;
 	}
+	last if ($sel_sta > $sim_time);
 	print "# grabbed $sel, transmission from $sel_sta -> $sel_end (CH=$channels[$sel_ch])\n" if ($debug == 1);
 	$sim_end = $sel_end;
 	if ($auto_simtime == 1){
 		my $nu = (sum values %nunique);
 		$nu = 1 if ($nu == 0);
 		if (scalar @recents < 50){
-			push(@recents, (sum values %nacked)/$nu);
+			push(@recents, (sum values %ndeliv)/$nu);
 			#printf "stddev = %.5f\n", stddev(\@recents);
 		}else{
-			if (stddev(\@recents) < 0.00001){
+			if (stddev(\@recents) < 0.0001){
 				print "### Continuing the simulation will not considerably affect the result! ###\n";
 				last;
 			}
@@ -298,7 +285,7 @@ while (1){
 # 			}
 		}elsif ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 0)){ # successful transmission but no ack is required
 			$successful += 1;
-			$nacked{$sel} += 1;
+			$ndeliv{$sel} += 1;
 			printf "# $sel 's transmission received by %d gateway(s) (channel $channels[$sel_ch])\n", scalar @$gw_rc if ($debug == 1);
 			
 			# remove the examined tuple of gw unavailability
@@ -307,9 +294,12 @@ while (1){
 				my $index = 0;
 				foreach my $tuple (@{$gunavailability{$gw}}){
 					my ($sta, $end, $ch, $sf, $m) = @$tuple;
-					splice @{$gunavailability{$gw}}, $index, 1 if (($end == $sel_end) && ($ch == $sel_ch) && ($sf == $sel_sf) && ($m eq "u"));
-					last;
+					if (($end == $sel_end) && ($ch == $sel_ch) && ($sf == $sel_sf) && ($m eq "u")){
+						last;
+					}
+					$index += 1;
 				}
+				splice @{$gunavailability{$gw}}, $index, 1;
 			}
 			
 			my $at = airtime($sel_sf, $npkt{$sel});
@@ -560,8 +550,8 @@ print "Total packets delivered = $successful\n";
 printf "Total packets delivered and acknowledged = %d\n", (sum values %nacked) if ($confirmed_perc > 0);
 print "Total confirmed packets dropped = $dropped\n";
 print "Total unconfirmed packets dropped = $dropped_unc\n";
-printf "Packet Delivery Ratio = %.5f\n", (sum values %nacked)/(sum values %nunique); # unique packets delivered / unique packets transmitted
-printf "Packet Reception Ratio = %.5f\n", $successful/$total_trans; # Global PRR
+printf "Packet Delivery Ratio = %.5f\n", ((sum values %nacked)+(sum values %ndeliv))/(sum values %nunique); # unique packets delivered / unique packets transmitted
+printf "Packet Reception Ratio = %.5f\n", (sum values %ndeliv)/(sum values %nunique);
 print "No GW available in RX1 = $no_rx1 times\n";
 print "No GW available in RX1 or RX2 = $no_rx2 times\n";
 print "Total downlink time = $total_down_time sec\n";
