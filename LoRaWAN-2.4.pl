@@ -2,7 +2,7 @@
 
 ###################################################################################
 #      Event-based simulator for (un)confirmed LoRaWAN 2.4GHz transmissions       #
-#                                    v2024.5.31                                   #
+#                                    v2024.7.2                                   #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways (3 x uplink, 1 x downlink transceivers)        #
@@ -31,10 +31,10 @@ use GD::SVG;
 use Statistics::Basic qw(:all);
 
 # Give 3 or 4 arguments (if 4 arguments are given, the terrain file format is different than the usual one)
-die "usage: ./LoRaWAN-2.4.pl <packets_per_hour> <simulation_time(secs)> <terrain_file> <gw_settings_file_(optional)>\n" unless (scalar @ARGV > 2);
+die "usage: ./LoRaWAN-2.4.pl <packets_per_hour> <simulation_time(hours)> <terrain_file> <gw_settings_file_(optional)>\n" unless (scalar @ARGV > 2);
 
 die "Packet rate must be higher than or equal to 1pkt per hour\n" if ($ARGV[0] < 1);
-die "Simulation time must be longer than or equal to 1h\n" if ($ARGV[1] < 3600);
+die "Simulation time must be longer than or equal to 1h\n" if ($ARGV[1] < 1);
 
 # node attributes
 my %ncoords = (); # node coordinates
@@ -66,19 +66,22 @@ my %gw_mode = (); # GW mode (uplink/downlink)
 # LoRa PHY and LoRaWAN parameters
 my @sensis = ([7,-112,-106], [8,-115,-109], [9,-117,-111], [10,-120,-114], [11,-123,-117], [12,-126,-120]); # sensitivities [SF, BW812, BW1625]
 my @thresholds = ([1,-8,-9,-9,-9,-9], [-11,1,-11,-12,-13,-13], [-15,-13,1,-13,-14,-15], [-19,-18,-17,1,-17,-18], [-22,-22,-21,-20,1,-20], [-25,-25,-25,-24,-23,1]); # capture effect power thresholds per SF[SF] for non-orthogonal transmissions
+my @snrs = (-7.5, -10, -12.5, -15, -17.5, -20);
+my $margin = 3;
 my $var = 3.57; # variance
 my ($dref, $Lpld0, $gamma) = (40, 100, 2.3); # attenuation model parameters
+my $noise = -90; # noise level for snr calculation
 my $max_retr = 8; # max number of retransmissions per packet (default value = 1)
 my $bw = 812500; # channel bandwidth
 my $cr = 1; # Coding Rate
-my @Ptx_l = (0, 10, 12.5); # dBm
-my @Ptx_w = (40*3.3, 58*3.3, 70*3.3); # Ptx cons. for 0, 10, 12.5 dBm (mW)
-my $Prx_w = 40 * 3.3;
-my $Pidle_w = 30 * 3.3; # this is actually the consumption of the microcontroller in idle mode
+my @Ptx_l = (-18, -11, -3, 5, 12.5); # dBm
+my @Ptx_w = (48*3.3, 49*3.3, 54*3.3, 65*3.3, 69*3.3); # Ptx cons. for Ptx_l options (mW)
+my $Prx_w = 71 * 3.3;
+my $Pidle_w = 20 * 3.3; # this is actually the consumption of an STM32F103 microcontroller in idle mode
 my @channels = (2403000000, 2425000000, 2479000000); # 3 uplink channels for the 3 available uplink transceivers
 my $rx2sf = 12; # SF used for RX2 
 my $rx2ch = 2450000000; # channel used for RX2
-my @avail_sfs = (8, 10, 12); # SF8, 10, and 12 for the 3 uplink transceivers, respectively (unless a custom settings file is used)
+my @avail_sfs = (8, 10, 12); # SF8, 10, and 12 for the 3 uplink transceivers, respectively (unless a custom gw settings file is used)
 
 # packet specific parameters
 my $fpl = 242; # max uplink frame payload (bytes)
@@ -101,7 +104,7 @@ my %overlaps = (); # handles special packet overlaps
 my $confirmed_perc = 0; # percentage of nodes that require confirmed transmissions (1=all)
 my $full_collision = 1; # take into account non-orthogonal SF transmissions or not
 my $period = 3600/$ARGV[0]; # time period between transmissions
-my $sim_time = $ARGV[1]; # given simulation time
+my $sim_time = $ARGV[1]*3600; # given simulation time in hours
 my $debug = 1; # enable debug mode
 my $sim_end = 0;
 my ($terrain, $norm_x, $norm_y) = (0, 0, 0); # terrain side, normalised terrain side
@@ -126,6 +129,7 @@ my %sorted_t = (); # keys = channels, values = list of nodes
 my @recents = ();
 my $auto_simtime = 0; # 1 = the simulation will automatically stop (useful when sim_time>>10000)
 my %sf_retrans = (); # number of retransmissions per SF
+my $adr_on = 0; # enable adr for tx power adjustments 
 
 # application server
 my $policy = 2; # gateway selection policy for downlink traffic
@@ -133,6 +137,7 @@ my %prev_seq = ();
 my %appacked = (); # counts the number of acked packets per node
 my %appsuccess = (); # counts the number of packets that received from at least one gw per node
 my %nogwavail = (); # counts how many time no gw was available (keys = nodes)
+my %powers = (); # contains last 10 received powers per node
 
 
 if (scalar @ARGV == 3){
@@ -208,6 +213,16 @@ while (1){
 		my $gw_rc = node_col($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf); # check for collisions and return a list of gws that received the uplink pkt
 		my $rwindow = 0;
 		my $failed = 0;
+		# keep the last 10 max received powers
+		my $max_snr = -999;
+		foreach my $g (@$gw_rc){
+			my $snr = @$g[1] - $noise;
+			$max_snr = $snr if ($snr > $max_snr);
+		}
+		push (@{$powers{$sel}}, $max_snr) if ($max_snr > -999);
+		shift @{$powers{$sel}} if (scalar @{$powers{$sel}} > 10);
+		my ($new_ptx, $new_index) = (undef, -1);
+		#
 		if ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 1)){ # if at least one gateway received the pkt -> successful transmission
 			$successful += 1;
 			$appsuccess{$sel} += 1 if ($sel_seq > $prev_seq{$sel});
@@ -215,48 +230,15 @@ while (1){
 			# now we have to find which gateway (if any) can transmit an ack in RX1 or RX2
 			
 			# check RX1
-			my ($sel_gw, $sel_p) = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 1);
+			my $sel_gw = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 1);
 			if (defined $sel_gw){
-				$sel_gw = $sel_gw.4; # switch to the downlink transceiver
-				my ($ack_sta, $ack_end) = ($sel_end+1, $sel_end+1+airtime($sel_sf, $overhead_d));
-				$total_down_time += airtime($sel_sf, $overhead_d);
-				$rwindow = 1;
-				$gresponses{$sel_gw} += 1;
-				push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $sel_ch, $sel_sf, "d"]);
-				my $new_name = $sel_gw."_".$gresponses{$sel_gw}; # e.g. A4_1
-				# place new transmission at the correct position
-				my $i = 0;
-				foreach my $el (@{$sorted_t{$channels[$sel_ch]}}){
-					my ($n, $sta, $end, $ch, $sf, $seq) = @$el;
-					last if ($sta > $ack_sta);
-					$i += 1;
-				}
-				$appacked{$sel} += 1 if ($sel_seq > $prev_seq{$sel});
-				splice(@{$sorted_t{$channels[$sel_ch]}}, $i, 0, [$new_name, $ack_sta, $ack_end, $sel_ch, $sel_sf, $appacked{$sel}]);
-				push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $sel_sf, $rwindow, $sel_ch, -1]);
-				print "# gw $sel_gw will transmit an ack to $sel ($new_name, RX$rwindow, channel $channels[$sel_ch])\n" if ($debug == 1);
+				schedule_ack($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, 1, $new_index);
 			}else{
 				# check RX2
 				$no_rx1 += 1;
-				($sel_gw, $sel_p) = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 2);
+				$sel_gw = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 2);
 				if (defined $sel_gw){
-					$sel_gw = $sel_gw.4; # switch to the downlink transceiver
-					my ($ack_sta, $ack_end) = ($sel_end+2, $sel_end+2+airtime($rx2sf, $overhead_d));
-					$total_down_time += airtime($rx2sf, $overhead_d);
-					$rwindow = 2;
-					$gresponses{$sel_gw} += 1;
-					push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, 0, $rx2sf, "d"]);
-					my $new_name = $sel_gw."_".$gresponses{$sel_gw};
-					my $i = 0;
-					foreach my $el (@{$sorted_t{$rx2ch}}){
-						my ($n, $sta, $end, $ch, $sf, $seq) = @$el;
-						last if ($sta > $ack_sta);
-						$i += 1;
-					}
-					$appacked{$sel} += 1 if ($sel_seq > $prev_seq{$sel});
-					splice(@{$sorted_t{$rx2ch}}, $i, 0, [$new_name, $ack_sta, $ack_end, 0, $rx2sf, $appacked{$sel}]);
-					push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $sel_sf, $rwindow, 0, -1]);
-					print "# gw $sel_gw will transmit an ack to $sel ($new_name, RX$rwindow, channel $rx2ch)\n" if ($debug == 1);
+					schedule_ack($sel_gw, $sel, $sel_sf, $rx2ch, $sel_seq, $sel_end, 2, $new_index);
 				}else{
 					$no_rx2 += 1;
 					print "# no gateway is available\n" if ($debug == 1);
@@ -265,29 +247,28 @@ while (1){
 				}
 			}
 			$prev_seq{$sel} = $sel_seq;
-# 			if (defined $sel_gw){
-# 				# ADR: the SF is already adjusted in min_sf; here only the transmit power is adjusted
-# 				my $gap = $sel_p - $sensis[$sel_sf-7][bwconv($bw)];
-# 				my $new_ptx = undef;
-# 				my $new_index = -1;
-# 				foreach my $p (sort {$a<=>$b} @Ptx_l){
-# 					$new_index += 1;
-# 					next if ($p >= $Ptx_l[$nptx{$sel}]); # we can only decrease power at the moment
-# 					if ($gap-$Ptx_l[$nptx{$sel}]+$p >= 12){
-# 						$new_ptx = $p;
-# 						last;
-# 					}
-# 				}
-# 				if (defined $new_ptx){
-# 					$gdest{$sel_gw}[-1][5] = $new_index;
-# 					print "# it will be suggested that $sel changes tx power to $Ptx_l[$new_index]\n" if ($debug == 1);
-# 				}
-# 			}
 		}elsif ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 0)){ # successful transmission but no ack is required
 			$successful += 1;
 			$ndeliv{$sel} += 1;
 			printf "# $sel 's transmission received by %d gateway(s) (channel $channels[$sel_ch])\n", scalar @$gw_rc if ($debug == 1);
-			
+			### ADR for unconfirmed transmissions
+			if ((scalar @{$powers{$sel}} == 10) && ($adr_on == 1)){
+				my ($new_ptx, $new_index) = adr($sel, $sel_sf);
+				if (defined $new_ptx){
+					my $sel_gw = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 1);
+					if (defined $sel_gw){
+						schedule_ack($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, 1, $new_index);
+					}else{
+						$sel_gw = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 2);
+						if (defined $sel_gw){
+							schedule_ack($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, 2, $new_index);
+						}else{
+							print "# no downlink commands could be sent to $sel\n" if ($debug == 1);
+						}
+					}
+				}
+			}
+			###
 			# remove the examined tuple of gw unavailability
 			foreach my $gwpr (@$gw_rc){
 				my ($gw, $pr) = @$gwpr;
@@ -592,21 +573,46 @@ printf "Avg SF = %.3f\n", $avg_sf/(scalar keys %ncoords);
 printf "Avg packet size = %.3f bytes\n", $avg_pkt/(scalar keys %ncoords);
 generate_picture() if ($picture == 1);
 
+sub schedule_ack{
+	my ($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, $rwindow, $new_index) = @_;
+	my $extra_bytes = 0;
+	if ($new_index != -1){
+		print "# it will be suggested that $sel changes tx power to $Ptx_l[$new_index]\n" if ($debug == 1);
+		$extra_bytes = $adr;
+	}
+	my $airt = airtime($sel_sf, $overhead_d+$extra_bytes);
+	my ($ack_sta, $ack_end) = ($sel_end+$rwindow, $sel_end+$rwindow+$airt);
+	$total_down_time += $airt;
+	print "# gw $sel_gw will transmit an ack (or commands) to $sel (RX$rwindow) (channel=$sel_ch)\n" if ($debug == 1);
+	$gresponses{$sel_gw} += 1;
+	push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $sel_ch, $sel_sf, "d"]);
+	my $new_name = $sel_gw.$gresponses{$sel_gw}; # e.g. A1
+	# place new transmission at the correct position
+	my $i = 0;
+	foreach my $el (@{$sorted_t{$sel_ch}}){
+		my ($n, $sta, $end, $ch, $sf, $seq, $m) = @$el;
+		last if ($sta > $ack_sta);
+		$i += 1;
+	}
+	$appacked{$sel} += 1 if (($sel_seq > $prev_seq{$sel}) && ($nconfirmed{$sel} == 1));
+	splice(@{$sorted_t{$sel_ch}}, $i, 0, [$new_name, $ack_sta, $ack_end, $sel_ch, $sel_sf, $appacked{$sel}, "d"]);
+	push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $sel_sf, $rwindow, $sel_ch, $new_index]);
+}
 
 sub gs_policy{ # gateway selection policy
 	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, $win) = @_;
-	my ($d_gw, $d_p) = (undef, -9999999999999);
+	my $sel_gw = undef;
 	if ($win == 2){
+		$sel_ch = $rx2ch;
 		if ($sel_sf < $rx2sf){
 			@$gw_rc = @{$nreachablegws{$sel}};
 		}
 		$sel_sf = $rx2sf;
 	}
 	my ($ack_sta, $ack_end) = ($sel_end+$win, $sel_end+$win+airtime($sel_sf, $overhead_d));
-	my $min_resp = 1;
+	my ($min_resp, $sel_p, $min_dc) = (1, -9999999999999, 9999999999999);
 	my @avail = ();
 	
-	# check for available gws (gws that are not currently receiving)
 	foreach my $g (@$gw_rc){
 		my ($gw, $p) = @$g;
 		my $is_avail = 1;
@@ -620,12 +626,12 @@ sub gs_policy{ # gateway selection policy
 		next if ($is_avail == 0);
 		push (@avail, $g);
 	}
-	return (undef, undef) if (scalar @avail == 0);
+	return undef if (scalar @avail == 0);
 	
 	if ($policy == 4){ # URCB
 		my $avgretr = (sum values %nogwavail)/(scalar keys %ncoords);
 		if ( ($nogwavail{$sel} < $avgretr) && ((scalar @avail)/(scalar @$gw_rc) < 2/3) ){
-			return (undef, undef);
+			return undef;
 		}
 	}
 	if ($policy == 5){ # FBS
@@ -636,27 +642,54 @@ sub gs_policy{ # gateway selection policy
 		}
 		$avgfair /= (scalar keys %ncoords);
 		if ( ($appacked{$sel}/$appsuccess{$sel} >= $avgfair) && ((scalar @avail)/(scalar @$gw_rc) < 2/3) && ($avgfair != 0) ){
-			return (undef, undef);
+			return undef;
 		}
 	}
 	foreach my $g (@avail){
 		my ($gw, $p) = @$g;
-		$gw =~ s/[0-9].*//; # keep only the letter(s)
 		if ($policy == 1){ # FCFS
 			my $resp = rand(2)/10;
 			if ($resp < $min_resp){
 				$min_resp = $resp;
-				$d_gw = $gw;
-				$d_p = $p;
+				$sel_gw = $gw;
 			}
 		}elsif (($policy == 2) || ($policy == 4) || ($policy == 5)){ # RSSI
-			if ($p > $d_p){
-				$d_gw = $gw;
-				$d_p = $p;
+			if ($p > $sel_p){
+				$sel_gw = $gw;
+				$sel_p = $p;
 			}
 		}
 	}
-	return ($d_gw, $d_p); # return gw ids without the transceiver number (e.g. A instead of A1)
+	return $sel_gw;
+}
+
+sub adr{ # ADR: the SF is already adjusted in min_sf; here only the transmit power is adjusted
+	my ($sel, $sel_sf) = @_;
+	my $m_snr = (max @{$powers{$sel}});
+	my $mgap = $m_snr - $snrs[$sel_sf-7] - $margin;
+	my $nstep = int($mgap/3);
+	my $new_ptx = $Ptx_l[$nptx{$sel}];
+	my $new_index = $nptx{$sel};
+	while ($nstep != 0){
+		if ($nstep > 0){
+			$new_ptx -= 3;
+			$new_index -= 1;
+			$nstep -= 1;
+			if ($new_ptx <= $Ptx_l[0]){
+				last;
+			}
+		}else{
+			if ($new_ptx < $Ptx_l[-1]){
+				$new_ptx += 3;
+				$nstep += 1;
+				$new_index += 1
+			}else{
+				last;
+			}
+		}
+	}
+	$new_ptx = undef if ($new_index == $nptx{$sel});
+	return ($new_ptx, $new_index);
 }
 
 sub node_col{ # handle node collisions
@@ -932,6 +965,7 @@ sub read_data{
 		foreach my $g (keys %gcoords){
 			$surpressed{$n}{$g} = 0;
 		}
+		@{$powers{$n}} = ();
 	}
 	for (my $i=7; $i<13; $i++){
 		$sf_retrans{$i} = 0;
@@ -1023,10 +1057,11 @@ sub read_data_custom{
 		}else{
 			$nperiod{$n} = $period;
 		}
+		@{$powers{$n}} = ();
 	}
 	foreach my $gw (@gateways){
 		my ($g, $x, $y) = @$gw;
-		# print "$g $x $y $gwsf{$g} \n";
+		print "$g $x $y $gwsf{$g} \n";
 		$gcoords{$g} = [$x, $y];
 		foreach my $n (keys %ncoords){
 			$surpressed{$n}{$g} = 0;
