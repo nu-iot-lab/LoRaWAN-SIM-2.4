@@ -191,7 +191,7 @@ while (1){
 		}
 	}
 	last if ($sel_sta > $sim_time);
-	print "# grabbed $sel, transmission from $sel_sta -> $sel_end (CH=$channels[$sel_ch])\n" if ($debug == 1);
+	print "# grabbed $sel, transmission from $sel_sta -> $sel_end (CH=$channels[$sel_ch], SF$sel_sf)\n" if ($debug == 1);
 	$sim_end = $sel_end;
 	if ($auto_simtime == 1){
 		my $nu = (sum values %nunique);
@@ -296,7 +296,7 @@ while (1){
 			$nunique{$sel} += 1 if ($sel_sta < $sim_time); # do not count transmissions that exceed the simulation time;
 			splice(@{$sorted_t{$channels[$sel_ch]}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
 			$total_trans += 1 if ($sel_sta < $sim_time); 
-			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
+			print "# $sel, new transmission at $sel_sta -> $sel_end (CH=$channels[$sel_ch], SF$sel_sf)\n" if ($debug == 1);
 			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf, $npkt{$sel})+1) * $Pidle_w;
 		}else{ # non-successful transmission
 			$failed = 1;
@@ -354,9 +354,7 @@ while (1){
 		
 		
 	}else{ # if the packet is a gw transmission
-		
 		$sel =~ s/_[0-9]+//; # keep only the gw id
-		print "$sel \n";
 		# remove the unnecessary tuples from gw unavailability
 		my @indices = ();
 		my $index = 0;
@@ -383,6 +381,7 @@ while (1){
 			}
 			$index += 1;
 		}
+		die "# no destination found!\n" unless (defined $dest);
 		splice @{$gdest{$sel}}, $index, 1;
 		# check if the transmission can reach the node
 		my $G = random_normal(1, 0, 1);
@@ -487,30 +486,32 @@ while (1){
 			$nconsumption{$dest} += $preamble*(2**$rx2sf)/500 * ($Prx_w + $Pidle_w);
 		}
 		@{$overlaps{$sel}} = ();
-		# plan next transmission
-		my $extra_bytes = 0;
-		if ($nresponse{$dest} == 1){
-			$extra_bytes = $adr;
-			$nresponse{$dest} = 0;
+		if ($nconfirmed{$dest} == 1){
+			# plan next transmission
+			my $extra_bytes = 0;
+			if ($nresponse{$dest} == 1){
+				$extra_bytes = $adr;
+				$nresponse{$dest} = 0;
+			}
+			my $at = airtime($sf, $npkt{$dest}+$extra_bytes);
+			my $new_start = $sel_sta - $rwindow + $nperiod{$dest} + rand(1);
+			$new_start = $sel_sta - $rwindow + rand(3) if ($failed == 1 && $new_trans == 0);
+			if (($new_trans == 1) && ($new_start < $sim_time)){ # do not count transmissions that exceed the simulation time
+				$nunique{$dest} += 1;
+			}
+			my $new_end = $new_start + $at;
+			my $i = 0;
+			foreach my $el (@{$sorted_t{$channels[$ch]}}){
+				my ($n, $sta, $end, $ch_, $sf_, $seq) = @$el;
+				last if ($sta > $new_start);
+				$i += 1;
+			}
+			splice(@{$sorted_t{$channels[$ch]}}, $i, 0, [$dest, $new_start, $new_end, $ch, $sf, $nunique{$dest}]);
+			$total_trans += 1 if ($new_start < $sim_time); # do not count transmissions that exceed the simulation time
+			$total_retrans += 1 if (($failed == 1) && ($new_start < $sim_time)); 
+			print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
+			$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + (airtime($sf, $npkt{$dest})+1) * $Pidle_w;
 		}
-		my $at = airtime($sf, $npkt{$dest}+$extra_bytes);
-		my $new_start = $sel_sta - $rwindow + $nperiod{$dest} + rand(1);
-		$new_start = $sel_sta - $rwindow + rand(3) if ($failed == 1 && $new_trans == 0);
-		if (($new_trans == 1) && ($new_start < $sim_time)){ # do not count transmissions that exceed the simulation time
-			$nunique{$dest} += 1;
-		}
-		my $new_end = $new_start + $at;
-		my $i = 0;
-		foreach my $el (@{$sorted_t{$channels[$ch]}}){
-			my ($n, $sta, $end, $ch_, $sf_, $seq) = @$el;
-			last if ($sta > $new_start);
-			$i += 1;
-		}
-		splice(@{$sorted_t{$channels[$ch]}}, $i, 0, [$dest, $new_start, $new_end, $ch, $sf, $nunique{$dest}]);
-		$total_trans += 1 if ($new_start < $sim_time); # do not count transmissions that exceed the simulation time
-		$total_retrans += 1 if (($failed == 1) && ($new_start < $sim_time)); 
-		print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
-		$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + (airtime($sf, $npkt{$dest})+1) * $Pidle_w;
 	}
 }
 # print "---------------------\n";
@@ -541,13 +542,13 @@ print "-----\n";
 my %fairs = (0 => [], 1 => [], 2 => []);
 foreach my $n (keys %ncoords){
 	if ($nconfirmed{$n} == 0){
-		push(@{$fairs{$nch{$n}}}, $nacked{$n}/$nunique{$n});
+		push(@{$fairs{$nch{$n}}}, $ndeliv{$n}/$nunique{$n});
 	}
 }
 my ($fair1, $fair2, $fair3) = (stddev(\@{$fairs{0}}), stddev(\@{$fairs{1}}), stddev(\@{$fairs{2}}));
-printf "PDR CH1 = %.3f\n", average(\@{$fairs{0}});
-printf "PDR CH2 = %.3f\n", average(\@{$fairs{1}});
-printf "PDR CH3 = %.3f\n", average(\@{$fairs{2}});
+printf "PRR CH1 = %.3f\n", average(\@{$fairs{0}});
+printf "PRR CH2 = %.3f\n", average(\@{$fairs{1}});
+printf "PRR CH3 = %.3f\n", average(\@{$fairs{2}});
 printf "Unfairness = %.3f\n", max($fair1, $fair2, $fair3) - min($fair1, $fair2, $fair3);
 if ($confirmed_perc > 0){
 	foreach my $g (sort keys %gcoords){
@@ -586,7 +587,7 @@ sub schedule_ack{
 	print "# gw $sel_gw will transmit an ack (or commands) to $sel (RX$rwindow) (channel=$sel_ch)\n" if ($debug == 1);
 	$gresponses{$sel_gw} += 1;
 	push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $sel_ch, $sel_sf, "d"]);
-	my $new_name = $sel_gw.$gresponses{$sel_gw}; # e.g. A1
+	my $new_name = $sel_gw."_".$gresponses{$sel_gw}; # e.g. A1
 	# place new transmission at the correct position
 	my $i = 0;
 	foreach my $el (@{$sorted_t{$sel_ch}}){
@@ -604,9 +605,9 @@ sub gs_policy{ # gateway selection policy
 	my $sel_gw = undef;
 	if ($win == 2){
 		$sel_ch = $rx2ch;
-		if ($sel_sf < $rx2sf){
-			@$gw_rc = @{$nreachablegws{$sel}};
-		}
+# 		if ($sel_sf < $rx2sf){
+# 			@$gw_rc = @{$nreachablegws{$sel}};
+# 		}
 		$sel_sf = $rx2sf;
 	}
 	my ($ack_sta, $ack_end) = ($sel_end+$win, $sel_end+$win+airtime($sel_sf, $overhead_d));
@@ -615,6 +616,7 @@ sub gs_policy{ # gateway selection policy
 	
 	foreach my $g (@$gw_rc){
 		my ($gw, $p) = @$g;
+		$gw =~ s/[0-9].*/4/; # replace the transceiver id to 4
 		my $is_avail = 1;
 		foreach my $gu (@{$gunavailability{$gw}}){
 			my ($sta, $end, $ch, $sf, $m) = @$gu;
@@ -624,7 +626,7 @@ sub gs_policy{ # gateway selection policy
 			}
 		}
 		next if ($is_avail == 0);
-		push (@avail, $g);
+		push (@avail, [$gw, $p]);
 	}
 	return undef if (scalar @avail == 0);
 	
@@ -817,7 +819,7 @@ sub min_sf{
 		foreach my $f (@avail_sfs){
 			my $S = $sensis[$f-7][$bwi];
 			my $Prx = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d0/$dref) + $Xs);
-			if (($Prx - 10) > $S){ # 10dBm tolerance
+			if (($Prx - $margin) > $S){
 				$gf = $f;
 				last;
 			}
@@ -833,10 +835,11 @@ sub min_sf{
 	foreach my $gw (keys %gcoords){
 		$nch{$n} = $gwch{$gw} if ($gwsf{$gw} == $sf);
 		next if ($gw_mode{$gw} eq 'u');
+		print "$gw \n";
 		my $d0 = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
 		my $S = $sensis[$rx2sf-7][$bwi];
 		my $Prx = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d0/$dref) + $Xs);
-		if (($Prx - 10) > $S){ # 10dBm tolerance
+		if (($Prx - $margin) > $S){
 			push(@{$nreachablegws{$n}}, [$gw, $Prx]);
 		}
 	}
@@ -1061,7 +1064,7 @@ sub read_data_custom{
 	}
 	foreach my $gw (@gateways){
 		my ($g, $x, $y) = @$gw;
-		print "$g $x $y $gwsf{$g} \n";
+		# print "$g $x $y $gwsf{$g} \n";
 		$gcoords{$g} = [$x, $y];
 		foreach my $n (keys %ncoords){
 			$surpressed{$n}{$g} = 0;
