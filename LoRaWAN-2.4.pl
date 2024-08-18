@@ -104,13 +104,8 @@ my %overlaps = (); # handles special packet overlaps
 my $confirmed_perc = 0; # percentage of nodes that require confirmed transmissions (1=all)
 my $full_collision = 1; # take into account non-orthogonal SF transmissions or not
 my $period = 3600/$ARGV[0]; # time period between transmissions
-<<<<<<< HEAD
-my $sim_time = $ARGV[1]; # given simulation time
-my $debug = 0; # enable debug mode
-=======
 my $sim_time = $ARGV[1]*3600; # given simulation time in hours
-my $debug = 1; # enable debug mode
->>>>>>> 03153aa696d306df4352bc0cc441a5f7734a41b6
+my $debug = 0; # enable debug mode
 my $sim_end = 0;
 my ($terrain, $norm_x, $norm_y) = (0, 0, 0); # terrain side, normalised terrain side
 my $start_time = time; # just for statistics
@@ -548,23 +543,17 @@ my %fairs = (0 => [], 1 => [], 2 => [], "all" => []);
 foreach my $n (keys %ncoords){
 	if ($nconfirmed{$n} == 0){
 		push(@{$fairs{$nch{$n}}}, $ndeliv{$n}/$nunique{$n});
-<<<<<<< HEAD
 		push(@{$fairs{"all"}}, $ndeliv{$n}/$nunique{$n});
-		printf "$n %.3f $nch{$n}\n", $ndeliv{$n}/$nunique{$n};
-=======
->>>>>>> 03153aa696d306df4352bc0cc441a5f7734a41b6
+# 		printf "$n %.3f $nch{$n}\n", $ndeliv{$n}/$nunique{$n};
 	}
 }
 my ($fair1, $fair2, $fair3) = (stddev(\@{$fairs{0}}), stddev(\@{$fairs{1}}), stddev(\@{$fairs{2}}));
 printf "PRR CH1 = %.3f\n", average(\@{$fairs{0}});
 printf "PRR CH2 = %.3f\n", average(\@{$fairs{1}});
 printf "PRR CH3 = %.3f\n", average(\@{$fairs{2}});
-<<<<<<< HEAD
 printf "Max-min unfairness = %.6f\n", max($fair1, $fair2, $fair3) - min($fair1, $fair2, $fair3);
 printf "Unfairness = %.6f\n", stddev(\@{$fairs{"all"}});
-=======
-printf "Unfairness = %.3f\n", max($fair1, $fair2, $fair3) - min($fair1, $fair2, $fair3);
->>>>>>> 03153aa696d306df4352bc0cc441a5f7734a41b6
+# printf "Unfairness = %.3f\n", max($fair1, $fair2, $fair3) - min($fair1, $fair2, $fair3);
 if ($confirmed_perc > 0){
 	foreach my $g (sort keys %gcoords){
 		print "GW $g sent out $gresponses{$g} acks\n";
