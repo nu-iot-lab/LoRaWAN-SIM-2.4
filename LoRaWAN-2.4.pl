@@ -102,7 +102,7 @@ my $confirmed_perc = 0; # percentage of nodes that require confirmed transmissio
 my $full_collision = 1; # take into account non-orthogonal SF transmissions or not
 my $period = 3600/$ARGV[0]; # time period between transmissions
 my $sim_time = $ARGV[1]; # given simulation time
-my $debug = 1; # enable debug mode
+my $debug = 0; # enable debug mode
 my $sim_end = 0;
 my ($terrain, $norm_x, $norm_y) = (0, 0, 0); # terrain side, normalised terrain side
 my $start_time = time; # just for statistics
@@ -557,17 +557,20 @@ print "No GW available in RX1 or RX2 = $no_rx2 times\n";
 print "Total downlink time = $total_down_time sec\n";
 printf "Script execution time = %.4f secs\n", $finish_time - $start_time;
 print "-----\n";
-my %fairs = (0 => [], 1 => [], 2 => []);
+my %fairs = (0 => [], 1 => [], 2 => [], "all" => []);
 foreach my $n (keys %ncoords){
 	if ($nconfirmed{$n} == 0){
-		push(@{$fairs{$nch{$n}}}, $nacked{$n}/$nunique{$n});
+		push(@{$fairs{$nch{$n}}}, $ndeliv{$n}/$nunique{$n});
+		push(@{$fairs{"all"}}, $ndeliv{$n}/$nunique{$n});
+		printf "$n %.3f $nch{$n}\n", $ndeliv{$n}/$nunique{$n};
 	}
 }
 my ($fair1, $fair2, $fair3) = (stddev(\@{$fairs{0}}), stddev(\@{$fairs{1}}), stddev(\@{$fairs{2}}));
-printf "PDR CH1 = %.3f\n", average(\@{$fairs{0}});
-printf "PDR CH2 = %.3f\n", average(\@{$fairs{1}});
-printf "PDR CH3 = %.3f\n", average(\@{$fairs{2}});
-printf "Unfairness = %.3f\n", max($fair1, $fair2, $fair3) - min($fair1, $fair2, $fair3);
+printf "PRR CH1 = %.3f\n", average(\@{$fairs{0}});
+printf "PRR CH2 = %.3f\n", average(\@{$fairs{1}});
+printf "PRR CH3 = %.3f\n", average(\@{$fairs{2}});
+printf "Max-min unfairness = %.6f\n", max($fair1, $fair2, $fair3) - min($fair1, $fair2, $fair3);
+printf "Unfairness = %.6f\n", stddev(\@{$fairs{"all"}});
 if ($confirmed_perc > 0){
 	foreach my $g (sort keys %gcoords){
 		print "GW $g sent out $gresponses{$g} acks\n";
