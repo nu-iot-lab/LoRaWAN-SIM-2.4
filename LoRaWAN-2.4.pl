@@ -546,21 +546,20 @@ foreach my $n (keys %ncoords){
 	if ($nconfirmed{$n} == 0){
 		push(@{$fairs{$nch{$n}}}, $ndeliv{$n}/$nunique{$n});
 		push(@{$fairs{"all"}}, $ndeliv{$n}/$nunique{$n});
-		$jains_index += $ndeliv{$n}/$nunique{$n};
-		$jains_denom += ($ndeliv{$n}/$nunique{$n})**2;
+		$jains_index += $ndeliv{$n};
+		$jains_denom += ($ndeliv{$n}**2);
 # 		printf "$n %.3f $nch{$n}\n", $ndeliv{$n}/$nunique{$n};
 	}
 }
 $jains_index *= $jains_index;
-$jains_index /= (scalar @{$fairs{"all"}}) * $jains_denom;
+$jains_index /= ((scalar @{$fairs{"all"}}) * $jains_denom);
 my ($fair1, $fair2, $fair3) = (stddev(\@{$fairs{0}}), stddev(\@{$fairs{1}}), stddev(\@{$fairs{2}}));
 printf "PRR CH1 = %.3f\n", average(\@{$fairs{0}});
 printf "PRR CH2 = %.3f\n", average(\@{$fairs{1}});
 printf "PRR CH3 = %.3f\n", average(\@{$fairs{2}});
 printf "Max-min unfairness = %.6f\n", max($fair1, $fair2, $fair3) - min($fair1, $fair2, $fair3);
-printf "Unfairness (stddev) = %.6f\n", stddev(\@{$fairs{"all"}});
+printf "Unfairness = %.6f\n", stddev(\@{$fairs{"all"}});
 printf "Fairness = %.6f\n", $jains_index;
-# printf "Unfairness = %.3f\n", max($fair1, $fair2, $fair3) - min($fair1, $fair2, $fair3);
 if ($confirmed_perc > 0){
 	foreach my $g (sort keys %gcoords){
 		print "GW $g sent out $gresponses{$g} acks\n";
